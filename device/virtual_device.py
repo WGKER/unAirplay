@@ -259,7 +259,7 @@ class VirtualDevice:
         self.play_url = url
         self.play_state = "PLAYING"
         self.play_position = position
-        self.play_start_time = time.time()
+        self.play_start_time = 0.0  # Will be set when audio actually starts playing
         self.last_seen = time.time()
 
         # Execute via output (pass position for seeking)
@@ -311,7 +311,7 @@ class VirtualDevice:
 
         self.play_position = position
         if self.play_state == "PLAYING":
-            self.play_start_time = time.time()
+            self.play_start_time = 0.0  # Will be reset when audio actually starts playing
         self.last_seen = time.time()
 
         if self._output:

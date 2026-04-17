@@ -168,6 +168,14 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
         if self._started:
             return
 
+        # Reset transient error state from a previous failed attempt (retry path).
+        # _eof/_closed are set on download failure but _started stays False,
+        # so the next readframes() call re-enters here for a retry.
+        # Without this reset, readframes() would immediately return NO_FRAMES
+        # even after a successful retry.
+        self._closed = False
+        self._eof = False
+
         # Check if source is streaming (determined by ffprobe in dlna_service)
         is_streaming = getattr(self._device, 'is_streaming', False) if self._device else False
 
@@ -313,6 +321,12 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
                 self._send_start_time = time.time()
                 log_debug(self._tag, f"[{device_name}] First audio data received")
 
+                # Start the fallback position timer now that audio is actually playing.
+                # play_start_time is intentionally left at 0 in _execute_play/_execute_seek
+                # to avoid the position counter running ahead during buffering.
+                if self._device:
+                    self._device.play_start_time = time.time()
+
                 try:
                     await event_bus.publish_async(
                         state_changed(self._device.device_id, state=self._device.play_state)
@@ -345,6 +359,7 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
             return
 
         self._closed = True
+        self._started = True  # Prevent _start_download_and_decoder from re-entering after close
 
         # Stop decoder
         if self._decoder:
