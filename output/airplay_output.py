@@ -67,6 +67,11 @@ class AirPlayOutput(BaseOutput):
         self._stream_task: Optional[asyncio.Task] = None
         self._current_source: Optional[AirPlayFFmpegDspAudioSource] = None
 
+        # Seamless switching support
+        self._prepared_source: Optional[AirPlayFFmpegDspAudioSource] = None
+        self._prepared_event: Optional[asyncio.Event] = None
+        self._buffer_ready_event: Optional[asyncio.Event] = None
+
         # Lock to prevent concurrent stream operations
         self._stream_lock = asyncio.Lock()
 
@@ -160,7 +165,8 @@ class AirPlayOutput(BaseOutput):
         url: str,
         seek_position: float = 0.0,
         dsp_enabled: bool = False,
-        dsp_config: Optional[dict] = None
+        dsp_config: Optional[dict] = None,
+        transition: bool = False
     ) -> bool:
         """
         Unified playback method - lossless audio chain.
@@ -173,6 +179,7 @@ class AirPlayOutput(BaseOutput):
             seek_position: Start position in seconds (0 = from beginning)
             dsp_enabled: Whether to apply DSP processing
             dsp_config: DSP configuration parameters
+            transition: If True, perform seamless transition (buffer new stream first, then switch)
 
         Returns:
             True if started successfully
@@ -184,24 +191,32 @@ class AirPlayOutput(BaseOutput):
 
         # Use lock to prevent concurrent stream operations
         async with self._stream_lock:
-            await self._stop_current_stream()
+            if transition and self._is_playing:
+                # Seamless transition: buffer new stream first, then switch
+                log_debug("AirPlayOutput", f"{self._device.device_name}: Starting seamless transition")
+                self._stream_task = asyncio.create_task(
+                    self._stream_url_seamless(url, seek_position, dsp_enabled, dsp_config)
+                )
+            else:
+                # Normal playback: stop current stream first, then play new
+                await self._stop_current_stream()
 
-            # Build mode description for logging
-            mode_parts = []
-            if seek_position > 0:
-                mode_parts.append(f"seek={seek_position}s")
-            if dsp_enabled:
-                mode_parts.append("DSP")
-            mode_info = f" ({', '.join(mode_parts)})" if mode_parts else ""
+                # Build mode description for logging
+                mode_parts = []
+                if seek_position > 0:
+                    mode_parts.append(f"seek={seek_position}s")
+                if dsp_enabled:
+                    mode_parts.append("DSP")
+                mode_info = f" ({', '.join(mode_parts)})" if mode_parts else ""
 
-            log_debug("AirPlayOutput", f"{self._device.device_name}: Playing{mode_info}")
+                log_debug("AirPlayOutput", f"{self._device.device_name}: Playing{mode_info}")
 
-            self._is_playing = True
+                self._is_playing = True
 
-            # Unified lossless playback
-            self._stream_task = asyncio.create_task(
-                self._stream_url_unified(url, seek_position, dsp_enabled, dsp_config)
-            )
+                # Unified lossless playback
+                self._stream_task = asyncio.create_task(
+                    self._stream_url_unified(url, seek_position, dsp_enabled, dsp_config)
+                )
 
         return True
 
@@ -344,6 +359,213 @@ class AirPlayOutput(BaseOutput):
                 except Exception:
                     pass
             self._is_playing = False
+
+    async def _stream_url_seamless(
+        self,
+        url: str,
+        seek_position: float,
+        dsp_enabled: bool,
+        dsp_config: Optional[dict]
+    ):
+        """
+        Seamless streaming: buffer new stream while current plays, then switch.
+
+        Phase 1: Start prebuffering new URL (keep current stream playing)
+        Phase 2: When buffer ready, atomically switch to new stream
+        """
+        from core.events import stream_switched
+
+        prebuffer_ready = asyncio.Event()
+        switch_completed = asyncio.Event()
+
+        try:
+            # Access pyatv internal components
+            facade_stream = self._atv.stream
+
+            raop_stream = None
+            for instance in facade_stream.instances:
+                if hasattr(instance, 'playback_manager'):
+                    raop_stream = instance
+                    break
+
+            if not raop_stream:
+                raise RuntimeError("Could not find RaopStream instance")
+
+            playback_manager = raop_stream.playback_manager
+            core = raop_stream.core
+
+            # Build metadata dict
+            metadata = {
+                "title": self._device.play_title,
+                "artist": self._device.play_artist,
+                "album": self._device.play_album,
+            }
+
+            # Check if source is streaming
+            is_streaming = getattr(self._device, 'is_streaming', False) if self._device else False
+
+            if is_streaming:
+                # For streaming sources, use direct URL (no prebuffer)
+                log_debug("AirPlayOutput", f"{self._device.device_name}: Streaming source detected, using direct seamless switch")
+                prepared_source = AirPlayFFmpegDspAudioSource(
+                    url=url,
+                    seek_position=seek_position,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    enhancer=self._enhancer,
+                    dsp_config=dsp_config if dsp_enabled else None,
+                    device=self._device,
+                    metadata=metadata,
+                )
+                # Start the source directly (streaming mode)
+                prepared_source._started = True
+                prepared_source._closed = False
+                prepared_source._eof = False
+                prepared_source.play_url = url
+
+                self._prepared_source = prepared_source
+                prebuffer_ready.set()
+            else:
+                # For regular files, use prebuffer mode
+                log_debug("AirPlayOutput", f"{self._device.device_name}: Starting prebuffer for seamless switch")
+
+                prepared_source = AirPlayFFmpegDspAudioSource(
+                    url=url,
+                    seek_position=seek_position,
+                    sample_rate=self._sample_rate,
+                    channels=self._channels,
+                    enhancer=self._enhancer,
+                    dsp_config=dsp_config if dsp_enabled else None,
+                    device=self._device,
+                    metadata=metadata,
+                    prebuffer=True,
+                    buffer_ready_event=prebuffer_ready
+                )
+                self._prepared_source = prepared_source
+
+                # Start prebuffering in background (runs in executor)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, prepared_source._start_download_and_decoder)
+
+                # Wait for prebuffer to be ready
+                log_debug("AirPlayOutput", f"{self._device.device_name}: Waiting for prebuffer to be ready...")
+                try:
+                    await asyncio.wait_for(prebuffer_ready.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    log_error("AirPlayOutput", f"{self._device.device_name}: Prebuffer timeout, falling back to normal playback")
+                    await self._stop_current_stream()
+                    self._is_playing = True
+                    self._stream_task = asyncio.create_task(
+                        self._stream_url_unified(url, seek_position, dsp_enabled, dsp_config)
+                    )
+                    return
+
+            # Prebuffer ready - now perform atomic switch
+            log_debug("AirPlayOutput", f"{self._device.device_name}: Prebuffer ready, performing atomic switch")
+
+            # Stop current stream
+            old_source = self._current_source
+            old_task = self._stream_task
+
+            # Acquire playback manager for new stream
+            playback_manager.acquire()
+
+            # Import internal components
+            from pyatv.interface import Audio, Metadata, PushUpdater, RemoteControl
+            from pyatv.protocols.airplay.auth import extract_credentials
+
+            takeover_release = core.takeover(Audio, Metadata, PushUpdater, RemoteControl)
+            client, context = await playback_manager.setup(core.service)
+            context.credentials = extract_credentials(core.service)
+            context.password = core.service.password
+
+            client.listener = raop_stream.listener
+            await client.initialize(core.service.properties)
+
+            # Reset DSP buffers for new stream
+            if self._enhancer and hasattr(self._enhancer, 'reset_all'):
+                self._enhancer.reset_all()
+
+            # Get metadata
+            file_metadata = await prepared_source.get_metadata()
+
+            # Handle volume
+            volume = None
+            if not raop_stream.audio.has_changed_volume and "initialVolume" in client.info:
+                initial_volume = client.info["initialVolume"]
+                if isinstance(initial_volume, float):
+                    context.volume = initial_volume
+            else:
+                try:
+                    await raop_stream.audio.set_volume(raop_stream.audio.volume)
+                except Exception:
+                    volume = raop_stream.audio.volume
+
+            # Stop old stream
+            if old_source:
+                await old_source.close()
+            if old_task:
+                old_task.cancel()
+                try:
+                    await old_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Give pyatv a moment to release old resources
+            await asyncio.sleep(0.05)
+
+            # Switch to new source
+            self._current_source = prepared_source
+            self._prepared_source = None
+
+            # Allow prepared source to start playing
+            prepared_source._can_play.set()
+
+            # Send audio
+            await client.send_audio(self._current_source, file_metadata, volume=volume)
+
+            log_debug("AirPlayOutput", f"{self._device.device_name}: Seamless switch completed")
+
+            # Notify state change
+            self._device.play_state = "PLAYING"
+            await event_bus.publish_async(state_changed(self._device.device_id, state="PLAYING"))
+            await event_bus.publish_async(stream_switched(self._device.device_id))
+
+            # Calculate AirPlay buffer delay
+            source = self._current_source
+            if source and source._total_frames_sent > 0 and source._send_start_time > 0:
+                audio_duration = source._total_frames_sent / source._sample_rate
+                wall_time = time.time() - source._send_start_time
+                buffer_delay = audio_duration - wall_time
+                log_debug("AirPlayOutput", f"[{self._device.device_name}] AirPlay buffer delay: "
+                         f"audio_duration={audio_duration:.2f}s, wall_time={wall_time:.2f}s, "
+                         f"buffer_delay={buffer_delay:.2f}s")
+
+            log_debug("AirPlayOutput", f"{self._device.device_name}: Stream completed")
+
+            # Notify playback completed
+            self._device.play_state = "STOPPED"
+            await event_bus.publish_async(state_changed(self._device.device_id, state="STOPPED"))
+
+        except asyncio.CancelledError:
+            log_debug("AirPlayOutput", "Seamless stream cancelled")
+            if prebuffer_ready and not prebuffer_ready.is_set():
+                # Cleanup prebuffer source if cancelled before ready
+                if self._prepared_source:
+                    await self._prepared_source.close()
+                    self._prepared_source = None
+        except Exception as e:
+            log_error("AirPlayOutput", f"Seamless stream error: {e}")
+            import traceback
+            log_debug("AirPlayOutput", traceback.format_exc())
+            # Fallback to normal playback
+            await self._stop_current_stream()
+            self._is_playing = True
+            self._stream_task = asyncio.create_task(
+                self._stream_url_unified(url, seek_position, dsp_enabled, dsp_config)
+            )
+        finally:
+            self._prepared_source = None
 
     async def _stop_current_stream(self):
         """Stop current streaming task and wait for cleanup."""
@@ -552,6 +774,7 @@ class AirPlayOutput(BaseOutput):
         elif action == "play":
             uri = kwargs.get("uri") or self._device.play_url
             position = kwargs.get("position", 0.0)
+            transition = kwargs.get("transition", False)
             if not uri:
                 log_warning("AirPlayOutput", "No URI to play")
                 return
@@ -561,7 +784,8 @@ class AirPlayOutput(BaseOutput):
                 url=uri,
                 seek_position=position,
                 dsp_enabled=self._device.dsp_enabled,
-                dsp_config=self._device.dsp_config if self._device.dsp_enabled else None
+                dsp_config=self._device.dsp_config if self._device.dsp_enabled else None,
+                transition=transition
             ))
 
         elif action == "stop":

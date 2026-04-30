@@ -644,7 +644,7 @@ class DLNAService:
             if match:
                 uri = self._decode_xml_entities(match.group(1))
                 device.play_url = uri
-                device.play_state = "TRANSITIONING"
+                # Note: do NOT change play_state here - seamless switch relies on state stability during SetAVTransportURI
                 device.play_position = 0.0
                 device.play_start_time = 0.0
 
@@ -695,13 +695,21 @@ class DLNAService:
                     charset="utf-8"
                 )
 
-            log_debug("DLNA", f"{req_ip} [{trace_id}] -> [AVTransport] Play -> {device.device_name} -> position: {device.play_position} url: {play_url}")
+            # Determine if this is a seamless transition:
+            # - Current state is PLAYING (song is currently playing)
+            # - URL is different from current play_url (user switched to a new song)
+            is_transition = (device.play_state == "PLAYING" and play_url != device.play_url)
+
+            # Set TRANSITIONING state before publishing CMD_PLAY (seamless switch will handle actual transition)
+            device.play_state = "TRANSITIONING"
+
+            log_debug("DLNA", f"{req_ip} [{trace_id}] -> [AVTransport] Play -> {device.device_name} -> position: {device.play_position} url: {play_url} transition={is_transition}")
 
             # 记录到订阅者（用于下次恢复）
             # Record to subscriber (for next recovery)
             subscribers[sid]["last_play_url"] = play_url
 
-            event_bus.publish(cmd_play(device.device_id, play_url, device.play_position, trace_id=trace_id))
+            event_bus.publish(cmd_play(device.device_id, play_url, device.play_position, trace_id=trace_id, transition=is_transition))
             response = soap_response("Play", "AVTransport")
 
         elif action == "Stop":

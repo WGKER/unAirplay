@@ -19,7 +19,7 @@ from typing import Optional, Dict, Any, TYPE_CHECKING
 from core.event_bus import event_bus
 from core.events import (
     EventType, Event,
-    state_changed, dsp_changed, volume_changed, metadata_updated
+    state_changed, dsp_changed, volume_changed, metadata_updated, stream_switched
 )
 from core.utils import log_info, log_debug, log_warning, log_error
 from config import DEFAULT_DSP_CONFIG, DEVICE_SUFFIX, SERVER_SPEAKER_NAME
@@ -173,6 +173,7 @@ class VirtualDevice:
         event_bus.subscribe(EventType.CMD_SET_MUTE, self._on_cmd_mute, device_id=self.device_id)
         event_bus.subscribe(EventType.CMD_SET_DSP, self._on_cmd_dsp, device_id=self.device_id)
         event_bus.subscribe(EventType.CMD_RESET_DSP, self._on_cmd_reset_dsp, device_id=self.device_id)
+        event_bus.subscribe(EventType.STREAM_SWITCHED, self._on_stream_switched, device_id=self.device_id)
 
         self._subscribed = True
         log_debug("VirtualDevice", f"Subscribed to events: {self.device_name}")
@@ -192,6 +193,7 @@ class VirtualDevice:
         """Handle play command"""
         url = event.data.get("url")
         position = event.data.get("position", 0.0)  # Extract position, default to 0
+        transition = event.data.get("transition", False)  # Seamless transition flag
 
         if not url:
             log_warning("VirtualDevice", f"[{event.trace_id}] Play command without URL: {self.device_name}")
@@ -209,7 +211,7 @@ class VirtualDevice:
         if "duration" in event.data:
             self.play_duration = event.data.get("duration", 0.0)
 
-        self._execute_play(url, position, event.trace_id)
+        self._execute_play(url, position, transition, event.trace_id)
 
     def _on_cmd_stop(self, event: Event):
         """Handle stop command"""
@@ -244,34 +246,47 @@ class VirtualDevice:
         """Handle reset DSP command"""
         self._execute_reset_dsp(event.trace_id)
 
+    def _on_stream_switched(self, event: Event):
+        """Handle seamless stream switch completed event"""
+        log_info("VirtualDevice", f"[{event.trace_id}] Stream switched: {self.device_name}")
+        self.play_state = "PLAYING"
+        self.play_start_time = time.time()
+        event_bus.publish(state_changed(self.device_id, state="PLAYING", url=self.play_url))
+
     # ===== Command Execution =====
 
-    def _execute_play(self, url: str, position: float = 0.0, trace_id: str = "--------"):
+    def _execute_play(self, url: str, position: float = 0.0, transition: bool = False, trace_id: str = "--------"):
         """Execute play command
 
         Args:
             url: Media URL to play
             position: Start position in seconds (default: 0.0)
+            transition: If True, perform seamless transition (buffer new stream first, then switch)
             trace_id: Trace ID for logging
         """
-        log_info("VirtualDevice", f"[{trace_id}] Play: {self.device_name} position={position}s")
+        log_info("VirtualDevice", f"[{trace_id}] Play: {self.device_name} position={position}s transition={transition}")
 
         self.play_url = url
-        self.play_state = "PLAYING"
+        # For seamless transition, keep TRANSITIONING state until output signals completion
+        if not transition:
+            self.play_state = "PLAYING"
+        # else: keep current state (should already be TRANSITIONING from DLNA Play command)
         self.play_position = position
         self.play_start_time = 0.0  # Will be set when audio actually starts playing
         self.last_seen = time.time()
 
-        # Execute via output (pass position for seeking)
+        # Execute via output (pass position for seeking and transition flag)
         if self._output:
-            self._output.handle_action("play", uri=url, position=position)
+            self._output.handle_action("play", uri=url, position=position, transition=transition)
 
-        # Publish state changed event
-        event_bus.publish(state_changed(
-            self.device_id,
-            state="PLAYING",
-            url=url
-        ))
+        # For non-transition, publish state changed immediately
+        # For transition, state change will be published after STREAM_SWITCHED event
+        if not transition:
+            event_bus.publish(state_changed(
+                self.device_id,
+                state="PLAYING",
+                url=url
+            ))
 
     def _execute_stop(self, trace_id: str = "--------"):
         """Execute stop command"""

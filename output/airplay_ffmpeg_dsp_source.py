@@ -77,6 +77,8 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
         duration: float = 0.0,
         device: Optional["VirtualDevice"] = None,
         metadata: Optional[dict] = None,
+        prebuffer: bool = False,
+        buffer_ready_event: Optional[asyncio.Event] = None,
     ):
         """
         Initialize FFmpeg DSP audio source.
@@ -91,6 +93,8 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
             duration: Total duration in seconds (0 = unknown)
             device: VirtualDevice for live DSP config updates
             metadata: Media metadata dict (title, artist, album)
+            prebuffer: If True, buffer until ready but don't start playback until allowed
+            buffer_ready_event: asyncio.Event to set when buffer is ready (for prebuffer mode)
         """
         self._url = url
         self._seek_position = seek_position
@@ -101,6 +105,11 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
         self._duration = duration
         self._device = device  # For live DSP config updates
         self._metadata = metadata or {}  # For Apple TV metadata display
+
+        # Prebuffer support
+        self._prebuffer = prebuffer
+        self._buffer_ready_event = buffer_ready_event
+        self._can_play = asyncio.Event()
 
         # FFmpeg downloader and decoder
         cache_filename = f"{device.device_id}_airplay_cache" if device else "airplay_cache"
@@ -238,7 +247,14 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
             self._eof = True
             return
 
-        self._started = True
+        # In prebuffer mode, signal buffer ready but don't start playback yet
+        if self._prebuffer and self._buffer_ready_event:
+            log_debug(self._tag, f"[{self._device_name_str}] Prebuffer ready, waiting for playback permission")
+            self._buffer_ready_event.set()
+            # Don't set _started = True yet - wait for _can_play.set() from caller
+        else:
+            # Normal mode: start immediately
+            self._started = True
 
         # Update enhancer params once
         if self._dsp_config and self._enhancer:
@@ -293,6 +309,12 @@ class AirPlayFFmpegDspAudioSource(AudioSource):
             await asyncio.get_event_loop().run_in_executor(
                 None, self._start_download_and_decoder
             )
+
+        # In prebuffer mode, wait for permission to start playing
+        if self._prebuffer and not self._can_play.is_set():
+            await self._can_play.wait()
+            # Now mark as started
+            self._started = True
 
         if self._closed or self._eof:
             return AudioSource.NO_FRAMES

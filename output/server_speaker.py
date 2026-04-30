@@ -21,7 +21,7 @@ import sounddevice as sd
 
 from core.utils import log_info, log_debug, log_warning, log_error
 from core.event_bus import event_bus
-from core.events import state_changed
+from core.events import state_changed, stream_switched
 from core.ffmpeg_downloader import FFmpegDownloader, DownloaderConfig
 from core.ffmpeg_decoder import FFmpegDecoder, DecoderConfig
 from core.ffmpeg_utils import PCMFormat
@@ -286,6 +286,77 @@ class ServerSpeakerOutput:
         self._is_playing = False
         log_debug("ServerSpeaker", f"{device_name}: Decoder thread ended")
 
+    def play_with_transition(self, url: str, position: float = 0.0):
+        """
+        Start playing with seamless transition: buffer new stream first, then switch.
+
+        Phase 1: Start buffering new URL (keep current stream playing)
+        Phase 2: When buffer ready, atomically switch to new stream
+
+        Args:
+            url: Audio URL to play
+            position: Start position in seconds (default: 0.0)
+        """
+        from core.events import stream_switched
+
+        if not self._running:
+            self.start()
+
+        # Check if source is streaming
+        is_streaming = getattr(self._device, 'is_streaming', False)
+
+        if is_streaming:
+            # For streaming sources, no prebuffer possible, just switch directly
+            log_debug("ServerSpeaker", f"{self._device.device_name}: Streaming source, performing direct switch")
+            self.play(url, position)
+            # Notify transition completed
+            if self._event_loop and self._event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    event_bus.publish_async(stream_switched(self._device.device_id)),
+                    self._event_loop
+                )
+            return
+
+        # For regular files, perform seamless transition
+        log_debug("ServerSpeaker", f"{self._device.device_name}: Starting seamless transition")
+
+        # Reset DSP buffers for new stream
+        if self._enhancer and hasattr(self._enhancer, 'reset_all'):
+            self._enhancer.reset_all()
+
+        # Clear audio queue (to minimize gap when switching)
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Start new playback (this will stop old stream internally via _stop_playback_internal)
+        self._current_url = url
+        self._current_position = position
+        self._playback_start_time = time.time()
+        self._is_playing = True
+
+        log_debug("ServerSpeaker", f"{self._device.device_name}: Starting playback with transition" +
+                 (f" (seek: {position:.1f}s)" if position > 0 else ""))
+
+        # Start downloader
+        self._downloader.start(url, seek_position=position)
+
+        # Start decoder thread (will wait for cache buffer in _decoder_loop)
+        self._decoder_thread = threading.Thread(
+            target=self._decoder_loop,
+            daemon=True
+        )
+        self._decoder_thread.start()
+
+        # Notify transition completed
+        if self._event_loop and self._event_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                event_bus.publish_async(stream_switched(self._device.device_id)),
+                self._event_loop
+            )
+
     def _start_playback(self, url: str, seek_position: float = 0.0):
         """Start playback: download thread + decoder thread"""
         self._stop_playback_internal()
@@ -540,8 +611,12 @@ class ServerSpeakerOutput:
         if action == "play":
             uri = kwargs.get("uri") or self._device.play_url
             position = kwargs.get("position", 0.0)
+            transition = kwargs.get("transition", False)
             if uri:
-                self.play(uri, position)
+                if transition and self._is_playing:
+                    self.play_with_transition(uri, position)
+                else:
+                    self.play(uri, position)
 
         elif action == "stop":
             self.stop_playback()

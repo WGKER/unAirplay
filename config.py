@@ -39,11 +39,11 @@ def _get_env_list(key: str, default: list) -> list:
 
 # ================= Application Info =================
 APP_NAME = "unAirplay"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 
 # ================= Debug Configuration =================
 # Enable debug mode (enables DEBUG level logging and Test API)
-DEBUG = _get_env_bool("DEBUG", False)
+DEBUG = _get_env_bool("DEBUG", True)
 
 # ================= Network Configuration =================
 HTTP_PORT = _get_env_int("HTTP_PORT", 6088)

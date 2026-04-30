@@ -46,6 +46,7 @@ class EventType(Enum):
     METADATA_UPDATED = auto()   # Metadata updated
     DSP_CHANGED = auto()        # DSP configuration changed
     VOLUME_CHANGED = auto()     # Volume changed
+    STREAM_SWITCHED = auto()    # Seamless stream switch completed
 
     # ===== System Events =====
     SYSTEM_STARTUP = auto()     # System startup
@@ -210,6 +211,15 @@ def volume_changed(device_id: str, volume: int, muted: bool = False) -> Event:
         type=EventType.VOLUME_CHANGED,
         device_id=device_id,
         data={"volume": volume, "muted": muted}
+    )
+
+
+def stream_switched(device_id: str) -> Event:
+    """Create stream switched event (seamless transition completed)"""
+    return Event(
+        type=EventType.STREAM_SWITCHED,
+        device_id=device_id,
+        data={}
     )
 
 
