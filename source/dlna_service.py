@@ -51,7 +51,7 @@ from core.events import (
     cmd_play, cmd_stop, cmd_pause, cmd_seek, cmd_set_volume, cmd_set_mute
 )
 from core.ffprobe import probe_media, format_bitrate
-from config import LOCAL_IP, HTTP_PORT, SSDP_MULTICAST_ADDR, SSDP_PORT
+from config import LOCAL_IP, HTTP_PORT, SSDP_MULTICAST_ADDR, SSDP_PORT, WEB_PORT
 
 if TYPE_CHECKING:
     from device.device_manager import DeviceManager
@@ -441,6 +441,7 @@ class DLNAService:
             f"ST: {st}\r\n"
             f"USN: {device.dlna_uuid}::{st}\r\n"
             "CACHE-CONTROL: max-age=1800\r\n"
+            f"X-DSP-URL: http://{LOCAL_IP}:{WEB_PORT}/\r\n"
             "SERVER: Python/unAirplay UPnP/1.0\r\n"
             "EXT:\r\n"
             "\r\n"
