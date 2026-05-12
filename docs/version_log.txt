@@ -9,6 +9,35 @@ Technical implementation details are not included.
 
 ---
 
+v1.1.4 (2026-05-12)
+-------------------
+
+1. Environment Variable Configuration / 环境变量配置支持
+
+   - All configuration options now support environment variables for easier Docker deployment
+   - Supports DEBUG, HTTP_PORT, WEB_PORT, SSDP_PORT, DEVICE_SUFFIX, AIRPLAY_EXCLUDE, AIRPLAY_OFFLINE_THRESHOLD, ENABLE_SERVER_SPEAKER, etc.
+   - 所有配置项新增环境变量支持，便于 Docker 部署
+   - 支持 DEBUG、HTTP_PORT、WEB_PORT、SSDP_PORT、DEVICE_SUFFIX、AIRPLAY_EXCLUDE、AIRPLAY_OFFLINE_THRESHOLD、ENABLE_SERVER_SPEAKER 等环境变量
+
+2. Bug Fix: Playback Status / 修复：播放状态异常
+
+   - Fixed playing status not updating correctly in some cases
+   - Fixed playback stalling when network resource acquisition fails
+   - 修复部分场景下播放状态更新不正确的问题
+   - 修复网络资源获取失败时播放中断的问题
+
+3. Bug Fix: Stream Switching / 修复：切歌异常
+
+   - Fixed RTSP session conflict (400 error) when switching songs rapidly
+   - 修复快速切歌时 RTSP 会话冲突导致 400 错误的问题
+
+4. Custom Response Header for vDLNA Integration / 添加自定义响应头用于 vDLNA 联动
+
+   - Added custom response header exposing the Web UI address for integration with vDLNA project
+   - Enables vDLNA to discover and link to unAirplay's Web DSP settings panel
+   - 添加自定义响应头，对外暴露 Web 界面地址，用于与 vDLNA 项目联动
+   - vDLNA 可发现并关联至 unAirplay 的 Web DSP 设置面板
+
 v1.1.3 (2026-02-08)
 -------------------
 
