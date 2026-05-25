@@ -91,16 +91,21 @@ class ServerSpeakerOutput:
         self._current_position = 0.0
         self._playback_start_time = 0.0
 
+        # ====================== 优化：默认音量改为30%（防炸音）======================
+        self._software_volume = 30  # 默认安全音量
+        self._software_muted = False
+        # ==========================================================================
+
         try:
             self._event_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._event_loop = None
 
-        # System volume controller
+        # System volume controller (保留但永不调用)
         self._volume_controller = create_system_volume_controller()
         if self._volume_controller and self._volume_controller.is_available():
             log_info("ServerSpeaker",
-                    f"{device.device_name}: System volume controller initialized ({type(self._volume_controller).__name__})")
+                    f"{device.device_name}: System volume controller initialized (BUT LOCKED TO MAX, software volume used)")
         else:
             log_warning("ServerSpeaker", f"{device.device_name}: System volume control not available")
 
@@ -118,6 +123,19 @@ class ServerSpeakerOutput:
             except Exception as e:
                 log_warning("ServerSpeaker", f"DSP error: {e}")
         return audio
+
+    # ====================== 优化：对数音量曲线（低音量更明显）======================
+    def _apply_software_volume(self, audio: np.ndarray) -> np.ndarray:
+        """纯软件音量调节，对数曲线，低音量变化更敏感，不修改系统音量"""
+        if self._software_muted:
+            return np.zeros_like(audio, dtype=np.float32)
+        
+        # 对数曲线：解决线性音量调低不明显的问题
+        normalized = self._software_volume / 100.0
+        gain = np.power(normalized, 3.0)  # 立方曲线，低音量段变化更明显
+        
+        return (audio * gain).astype(np.float32)
+    # ============================================================================
 
     def _audio_callback(self, outdata, frames, time_info, status):
         """sounddevice callback function"""
@@ -267,14 +285,18 @@ class ServerSpeakerOutput:
                     # Apply DSP
                     enhanced = self._apply_dsp(audio)
 
+                    # ====================== 关键：应用软件音量 ======================
+                    final_audio = self._apply_software_volume(enhanced)
+                    # ==============================================================
+
                     # Put in output queue
                     try:
-                        self._audio_queue.put_nowait(enhanced)
+                        self._audio_queue.put_nowait(final_audio)
                     except queue.Full:
                         # Queue full, drop oldest
                         try:
                             self._audio_queue.get_nowait()
-                            self._audio_queue.put_nowait(enhanced)
+                            self._audio_queue.put_nowait(final_audio)
                         except queue.Empty:
                             pass
 
@@ -523,59 +545,29 @@ class ServerSpeakerOutput:
             # Restart playback from new position
             self._start_playback(self._current_url, position)
         else:
-            log_warning("ServerSpeaker", f"{self._device.device_name}: Cannot seek, no URL")
+            log_warning("ServerSpeaker", f"{device.device_name}: Cannot seek, no URL")
 
     def set_volume(self, volume: int):
         """
-        Set volume (0-100).
-
-        Args:
-            volume: Volume level 0-100
+        Set volume (0-100) - 纯软件调节，不动系统音量，步进1
         """
-        if self._volume_controller and self._volume_controller.is_available():
-            if self._volume_controller.set_volume(volume):
-                log_debug("ServerSpeaker", f"System volume set to {volume}%")
-            else:
-                log_warning("ServerSpeaker", f"Failed to set system volume to {volume}%")
-        else:
-            log_debug("ServerSpeaker", "System volume control not available")
+        self._software_volume = max(0, min(100, int(volume)))  # 强制步进1
+        log_debug("ServerSpeaker", f"Software volume set to {self._software_volume}% (SYSTEM VOLUME LOCKED)")
 
     def set_mute(self, muted: bool):
         """
-        Set mute state.
-
-        Args:
-            muted: True to mute
+        Set mute state - 纯软件静音
         """
-        if self._volume_controller and self._volume_controller.is_available():
-            if self._volume_controller.set_mute(muted):
-                log_debug("ServerSpeaker", f"System mute set to {muted}")
-            else:
-                log_warning("ServerSpeaker", f"Failed to set system mute to {muted}")
-        else:
-            log_debug("ServerSpeaker", "System mute control not available")
+        self._software_muted = muted
+        log_debug("ServerSpeaker", f"Software mute set to {muted}")
 
     def get_volume(self) -> int:
-        """
-        Get current system volume.
-
-        Returns:
-            Volume level 0-100, or 0 if not available
-        """
-        if self._volume_controller and self._volume_controller.is_available():
-            return self._volume_controller.get_volume()
-        return 0
+        """返回软件音量，不读取系统音量"""
+        return self._software_volume
 
     def get_mute(self) -> bool:
-        """
-        Get current system mute state.
-
-        Returns:
-            True if muted, False otherwise
-        """
-        if self._volume_controller and self._volume_controller.is_available():
-            return self._volume_controller.get_mute()
-        return False
+        """返回软件静音状态"""
+        return self._software_muted
 
     def get_current_position(self) -> float:
         """Get current playback position in seconds"""
@@ -629,12 +621,9 @@ class ServerSpeakerOutput:
             self.seek(position)
 
         elif action == "set_volume":
-            volume = kwargs.get("volume", 50)
+            volume = kwargs.get("volume", 30)
             self.set_volume(volume)
 
         elif action == "set_mute":
             muted = kwargs.get("muted", False)
             self.set_mute(muted)
-
-
-
