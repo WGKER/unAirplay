@@ -39,7 +39,7 @@ def _get_env_list(key: str, default: list) -> list:
 
 # ================= Application Info =================
 APP_NAME = "unAirplay"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 
 # ================= Debug Configuration =================
 # Enable debug mode (enables DEBUG level logging and Test API)
