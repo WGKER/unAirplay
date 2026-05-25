@@ -9,6 +9,7 @@ on:
 
 # 统一配置：只改这里一次，全局自动调用
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DOCKER_IMAGE: un-airplay
   DOCKER_TAG: 1.1.5
 
