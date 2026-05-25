@@ -1,0 +1,50 @@
+name: Build Docker Image Arm64(Only Build, No Push)
+
+# 触发条件：仅当修改当前 workflow yml 文件时自动构建
+on:
+  push:
+    paths:
+      - '.github/workflows/**'  # 只要修改 workflows 里的 yml 就触发
+  workflow_dispatch:            # 保留手动触发
+
+# 统一配置：只改这里一次，全局自动调用
+env:
+  DOCKER_IMAGE: wgker/un-airplay
+  DOCKER_TAG: 1.1.5  # 版本标签，可改为 v1.0.0 等
+
+jobs:
+  build-only:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 构建镜像：只构建、不上传
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: false
+          tags: ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 只保留 arm64，amd64 已注释
+          platforms: linux/arm64
+          # platforms: linux/amd64,linux/arm64
+
+      # 导出镜像为 tar 包
+      - name: Export Docker Image
+        run: |
+          docker save -o ${{ env.DOCKER_IMAGE }}_${{ env.DOCKER_TAG }}.tar ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
+
+      # 上传产物：自动匹配镜像名 + 标签，文件名清晰
+      - name: Upload Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ env.DOCKER_IMAGE }}-${{ env.DOCKER_TAG }}.tar
+          path: ${{ env.DOCKER_IMAGE }}_${{ env.DOCKER_TAG }}.tar
