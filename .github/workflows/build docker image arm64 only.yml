@@ -9,8 +9,8 @@ on:
 
 # 统一配置：只改这里一次，全局自动调用
 env:
-  DOCKER_IMAGE: wgker/un-airplay
-  DOCKER_TAG: 1.1.5  # 版本标签，可改为 v1.0.0 等
+  DOCKER_IMAGE: un-airplay
+  DOCKER_TAG: 1.1.5
 
 jobs:
   build-only:
