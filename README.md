@@ -1,5 +1,16 @@
 # unAirplay
 
+## 当前问题
+1.1.4版本存在的问题：
+- NAS本机使用Shairport-Sync，锁定音频控制器为最高音量，此时生成的Server Speaker默认播放音量太大
+- Shairport-Sync Airplay 2 转 DLNA 无法播放音频
+
+## 更新记录
+1.1.5
+- 优化Server Speaker，连接后默认音量30%，避免爆音，软件层面调节音量以适配音频控制器最大音量，步进改为1，优化调节音量时听感变化力度
+
+
+
 [English](README.md) | [中文](README_CN.md)
 
 ---
