@@ -39,7 +39,7 @@ def _get_env_list(key: str, default: list) -> list:
 
 # ================= Application Info =================
 APP_NAME = "unAirplay"
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 
 # ================= Debug Configuration =================
 # Enable debug mode (enables DEBUG level logging and Test API)
@@ -84,6 +84,11 @@ BUFFER_SIZE = 10             # Audio buffer queue size
 # Playback starts when downloaded cache file exceeds this size
 MIN_CACHE_SIZE = 100  # KB
 
+# ================= Pause Auto-Stop Configuration =================
+# Auto-stop paused devices after this many minutes (0 = disabled)
+# 设备暂停播放后，超过此时间(分钟)自动清空播放状态 / 0 禁用
+PAUSED_AUTO_STOP_TIMEOUT = _get_env_int("PAUSED_AUTO_STOP_TIMEOUT", 0)
+
 # Streaming audio playback behavior
 # When playing streaming sources (duration=0 or very large):
 # - True: Seek to latest position (for live streams)
@@ -126,6 +131,11 @@ AIRPLAY_OFFLINE_THRESHOLD = _get_env_int("AIRPLAY_OFFLINE_THRESHOLD", 10)
 #   2. If there is a device, create the Server Speaker virtual device
 #   3. If there is no device, output a warning in the log
 ENABLE_SERVER_SPEAKER = _get_env_bool("ENABLE_SERVER_SPEAKER", True)
+
+# Control volume in software (DSP domain) instead of system/hardware level
+# Useful for Docker or headless environments where system volume control is unavailable
+#软件层面控制音量，适用于 Docker 或无法调用系统音量的环境
+SERVER_SPEAKER_SOFTWARE_VOLUME = _get_env_bool("SERVER_SPEAKER_SOFTWARE_VOLUME", True)
 
 # ================= DSP Default Configuration =================
 DEFAULT_DSP_CONFIG = {
